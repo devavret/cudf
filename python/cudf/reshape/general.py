@@ -1,6 +1,7 @@
 # Copyright (c) 2018, NVIDIA CORPORATION.
 
 import numpy as np
+import pandas as pd
 
 from cudf.dataframe import Series
 from cudf.dataframe import Buffer
@@ -8,6 +9,8 @@ from cudf.dataframe import DataFrame
 from cudf.utils import cudautils
 from cudf.dataframe.categorical import CategoricalColumn
 
+from libgdf_cffi import libgdf
+from librmm_cffi import librmm as rmm
 
 def melt(frame, id_vars=None, value_vars=None, var_name='variable',
          value_name='value'):
@@ -69,7 +72,18 @@ def melt(frame, id_vars=None, value_vars=None, var_name='variable',
                 " in the DataFrame: {missing}"
                 "".format(missing=list(missing)))
     else:
-        value_vars = []
+        # then all remaining columns in frame
+        value_vars = frame.columns.drop(id_vars)
+        value_vars = list(value_vars)
+    
+    if len(value_vars) != 0:
+        dtypes = [ frame[var].dtype for var in value_vars ]
+        dtype = dtypes[0]
+        if pd.api.types.is_categorical_dtype(dtype):
+            raise NotImplementedError('Categorical columns are not yet '
+                                        'supported for function')
+        if any(t != dtype for t in dtypes):
+            raise ValueError('all columns must have the same dtype')
 
     # overlap
     overlap = set(id_vars).intersection(set(value_vars))
@@ -83,27 +97,46 @@ def melt(frame, id_vars=None, value_vars=None, var_name='variable',
     N = len(frame)
     K = len(value_vars)
 
-    def _tile(A, reps):
-        series_list = [A] * reps
-        return Series._concat(objs=series_list, index=None)
+    id_cols_ptr = [
+        frame[col_name]._column.cffi_view
+        for col_name in id_vars
+    ]
+    value_cols_ptr = [
+        frame[col_name]._column.cffi_view
+        for col_name in value_vars
+    ]
 
-    # Step 1: tile id_vars
-    mdata = {}
+    new_nrow = N * K
+    dtypes = []
     for col in id_vars:
-        mdata[col] = _tile(frame[col], K)
-        
-    # Step 2: add variable
-    var_cols = []
-    for i, var in enumerate(value_vars):
-        var_cols.append(Series(Buffer(
-            cudautils.full(size=N, value=i, dtype=np.int8))))
-    temp = Series._concat(objs=var_cols, index=None)
-    mdata[var_name] = Series(CategoricalColumn(
+        dtypes.append(frame[col].dtype)
+    dtypes.append(np.int8) # for the categorical
+    dtypes.append(frame[value_vars[0]].dtype) # for the value column
+
+    new_col_series = [
+        Series.from_masked_array(
+            data=Buffer(rmm.device_array(shape=new_nrow, dtype=dt)),
+            mask=cudautils.make_mask(size=new_nrow),
+        )
+        for dt in dtypes]
+    new_col_series_ptr = [ ser._column.cffi_view for ser in new_col_series ]
+
+    libgdf.gdf_melt(
+        id_cols_ptr,
+        len(id_cols_ptr),
+        value_cols_ptr,
+        len(value_cols_ptr),
+        new_col_series_ptr
+    )
+
+    new_mdata = collections.OrderedDict()
+    # add id series to dict
+    for col_name in id_vars:
+        new_mdata[col_name] = new_col_series.pop(0)
+    # add variable series to dict
+    temp = new_col_series.pop(0)
+    new_mdata[var_name] = Series(CategoricalColumn(
         categories=tuple(value_vars), data=temp._column.data, ordered=False))
-
-    # Step 3: add values
-    mdata[value_name] = Series._concat(
-        objs=[frame[val] for val in value_vars],
-        index=None)
-
-    return DataFrame(mdata)
+    new_mdata[value_name] = new_col_series.pop(0)
+    
+    return DataFrame(new_mdata)

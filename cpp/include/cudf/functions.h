@@ -930,3 +930,7 @@ gdf_error gdf_order_by(gdf_column** input_columns,
                        size_t       num_inputs,
                        gdf_column*  output_indices,
                        int          flag_nulls_are_smallest);
+
+// reshape
+
+gdf_error gdf_melt(gdf_column *id_columns[], size_t num_id_cols, gdf_column *value_columns[], size_t num_value_cols, gdf_column *out_columns[]);
