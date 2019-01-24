@@ -16,7 +16,7 @@ def melt(frame, id_vars=None, value_vars=None, var_name='variable',
          value_name='value'):
     """Unpivots a DataFrame from wide format to long format,
     optionally leaving identifier variables set.
-    
+
     Parameters
     ----------
     frame : DataFrame
@@ -35,16 +35,38 @@ def melt(frame, id_vars=None, value_vars=None, var_name='variable',
 
     Returns
     -------
-    molten : DataFrame
+    out : DataFrame
+        Melted result
 
     Difference from pandas:
      * Does not support 'col_level' because cuDF does not have multi-index
 
-    TODO: Examples
+    Examples
+    --------
+
+    .. code-block:: python
+        import cudf
+        import numpy as np
+
+        df = cudf.DataFrame({'A': {0: 1, 1: 1, 2: 5},
+                             'B': {0: 1, 1: 3, 2: 6},
+                             'C': {0: 1.0, 1: np.nan, 2: 4.0},
+                             'D': {0: 2.0, 1: 5.0, 2: 6.0}})
+        df2 = cudf.melt(frame=df, id_vars=['A', 'B'], value_vars=['C', 'D'])
+        print(df2)
+
+    Output:
+    .. code-block:: python
+             A    B variable value
+        0    1    1        C   1.0
+        1    1    3        C
+        2    5    6        C   4.0
+        3    1    1        D   2.0
+        4    1    3        D   5.0
+        5    5    6        D   6.0
     """
 
     # Arg cleaning
-    import types
     import collections
     # id_vars
     if id_vars is not None:
@@ -75,15 +97,20 @@ def melt(frame, id_vars=None, value_vars=None, var_name='variable',
         # then all remaining columns in frame
         value_vars = frame.columns.drop(id_vars)
         value_vars = list(value_vars)
-    
-    if len(value_vars) != 0:
-        dtypes = [ frame[var].dtype for var in value_vars ]
+
+    # Error for unimplemented support for datatype
+    dtypes = [frame[col].dtype for col in id_vars + value_vars]
+    if any(pd.api.types.is_categorical_dtype(t) for t in dtypes):
+        raise NotImplementedError('Categorical columns are not yet '
+                                  'supported for function')
+
+    # Check dtype homogeneity in value_var
+    # Because heterogeneous concat is unimplemented
+    dtypes = [frame[col].dtype for col in value_vars]
+    if len(dtypes) > 0:
         dtype = dtypes[0]
-        if pd.api.types.is_categorical_dtype(dtype):
-            raise NotImplementedError('Categorical columns are not yet '
-                                        'supported for function')
         if any(t != dtype for t in dtypes):
-            raise ValueError('all columns must have the same dtype')
+            raise ValueError('all cols in value_vars must have the same dtype')
 
     # overlap
     overlap = set(id_vars).intersection(set(value_vars))
