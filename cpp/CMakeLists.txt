@@ -527,6 +527,7 @@ add_library(cudf
             src/utilities/legacy/error_utils.cpp
             src/utilities/nvtx/nvtx_utils.cpp
             src/utilities/nvtx/legacy/nvtx_utils.cpp
+            src/utilities/device_operators.cu
             src/copying/copy.cpp
             src/copying/scatter.cu
             src/copying/copy.cu

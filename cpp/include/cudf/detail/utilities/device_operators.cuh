@@ -82,7 +82,7 @@ struct DeviceCount {
  * value for minimum operator on string values.
  *
  */
-__constant__ char max_string_sentinel[5]{"\xF7\xBF\xBF\xBF"};
+char const* get_max_string_sentinel();
 
 /* @brief binary `min` operator */
 struct DeviceMin {
@@ -100,9 +100,8 @@ struct DeviceMin {
   // @brief identity specialized for string_view 
   template <typename T,
             typename std::enable_if_t<std::is_same<T, cudf::string_view>::value>* = nullptr>
-  static constexpr T identity() {
-    const char* psentinel{nullptr};
-    cudaGetSymbolAddress((void**)&psentinel, max_string_sentinel);
+  static T identity() {
+    const char* psentinel = get_max_string_sentinel();
     return T(psentinel, 4);
   }
 };
@@ -121,9 +120,8 @@ struct DeviceMax {
   }
   template <typename T,
             typename std::enable_if_t<std::is_same<T, cudf::string_view>::value>* = nullptr>
-  static constexpr T identity() {
-    const char* psentinel{nullptr};
-    cudaGetSymbolAddress((void**)&psentinel, max_string_sentinel);
+  static T identity() {
+    const char* psentinel = get_max_string_sentinel();
     return T(psentinel, 0);
   }
 
