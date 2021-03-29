@@ -23,6 +23,7 @@
 
 #include <io/comp/gpuinflate.h>
 
+#include <cudf/io/data_sink.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/traits.hpp>
@@ -973,6 +974,27 @@ rmm::device_buffer reader::impl::decompress_page_data(
         decomp_offset += inflate_in[argc].dstSize;
         argc++;
       });
+
+      auto out_file   = std::getenv("PARQUET_SNAPPY_CHUNK_OUTFILE");
+      bool do_extract = (out_file != nullptr);
+      std::cout << "compression found " << codec.first << std::endl;
+      std::cout << "num chunks " << argc - start_pos << std::endl;
+
+      if (do_extract) {
+        auto sink = data_sink::create(out_file);
+        for (int32_t i = start_pos; i < argc; ++i) {
+          auto snappy_chunk = inflate_in[i];
+          auto srcDevice    = snappy_chunk.srcDevice;
+          auto srcSize      = snappy_chunk.srcSize;
+          std::cout << "chunk size: " << srcSize << std::endl;
+
+          std::vector<uint8_t> host_mem(srcSize);
+          cudaMemcpy(host_mem.data(), srcDevice, srcSize, cudaMemcpyDeviceToHost);
+          sink->host_write(&srcSize, sizeof(srcSize));
+          sink->host_write(host_mem.data(), host_mem.size());
+        }
+        sink->flush();
+      }
 
       CUDA_TRY(cudaMemcpyAsync(inflate_in.device_ptr(start_pos),
                                inflate_in.host_ptr(start_pos),
