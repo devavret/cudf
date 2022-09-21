@@ -213,7 +213,7 @@ ConfigureTest(
   INTEROP_TEST interop/to_arrow_test.cpp interop/from_arrow_test.cpp interop/dlpack_test.cpp
 )
 
-ConfigureTest(ARROW_SNE_TEST arrow/sne.cpp)
+ConfigureTest(ARROW_SNE_TEST arrow/sne2.cpp)
 
 # ##################################################################################################
 # * io tests --------------------------------------------------------------------------------------
