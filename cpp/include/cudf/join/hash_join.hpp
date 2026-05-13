@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cudf/hashing.hpp>
+#include <cudf/join/hash_join_storage.hpp>
 #include <cudf/join/join.hpp>
 #include <cudf/table/table_view.hpp>
 #include <cudf/types.hpp>
@@ -16,6 +17,7 @@
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/device_uvector.hpp>
 
+#include <memory>
 #include <optional>
 #include <utility>
 
@@ -308,8 +310,59 @@ class hash_join {
     rmm::cuda_stream_view stream      = cudf::get_default_stream(),
     rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref()) const;
 
+  /**
+   * @brief Releases the internal hash table's slot storage as an owning,
+   *        device-resident `hash_join_storage`.
+   *
+   * The returned snapshot is a fresh `rmm::device_buffer` containing the
+   * exact bytes of the cuco multiset's slot storage at the time of the
+   * call. The originating `hash_join` instance remains usable (this is a
+   * `const` operation; one D-to-D copy is performed internally).
+   *
+   * No host-to-device or device-to-host copy is performed. Callers that
+   * wish to stage the snapshot to host memory must do so themselves.
+   *
+   * @param stream CUDA stream used for the D-to-D copy.
+   * @return Owning `hash_join_storage` snapshot suitable for later
+   *         restoration via `from_storage`.
+   */
+  [[nodiscard]] hash_join_storage release_storage(
+    rmm::cuda_stream_view stream = cudf::get_default_stream()) const;
+
+  /**
+   * @brief Reconstructs a `hash_join` from a previously-released storage
+   *        snapshot.
+   *
+   * Allocates a fresh hash table of the same capacity (no insert kernel
+   * runs) and copies the storage bytes into it on `stream`. The result
+   * behaves identically to a `hash_join` built directly from `build`,
+   * as long as `build` references the same logical key columns (same
+   * schema, row count, and encoded key values) as the original.
+   *
+   * No host-to-device or device-to-host copy is performed.
+   *
+   * @throws std::invalid_argument if `storage.slot_count * storage.slot_bytes`
+   *         does not equal `storage.slots.size()` or if `build.num_rows()`
+   *         does not match the expected build size for the recorded
+   *         load factor.
+   *
+   * @param storage Previously-released storage snapshot. Consumed.
+   * @param build Build-side key columns. Must outlive the returned
+   *              `hash_join`.
+   * @param stream CUDA stream used for the D-to-D copy.
+   * @return Reconstructed hash_join.
+   */
+  [[nodiscard]] static std::unique_ptr<hash_join> from_storage(
+    hash_join_storage storage,
+    cudf::table_view const& build,
+    rmm::cuda_stream_view stream = cudf::get_default_stream());
+
  private:
-  std::unique_ptr<impl_type const> _impl;
+  /// Private constructor used by `from_storage`; wraps an already-built
+  /// detail impl that was constructed with the no-insert path.
+  explicit hash_join(std::unique_ptr<impl_type> impl);
+
+  std::unique_ptr<impl_type> _impl;
 };
 
 /** @} */  // end of group

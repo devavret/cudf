@@ -7,6 +7,7 @@
 #include <cudf/column/column.hpp>
 #include <cudf/detail/join/join.hpp>
 #include <cudf/hashing.hpp>
+#include <cudf/join/hash_join_storage.hpp>
 #include <cudf/join/join.hpp>
 #include <cudf/table/table_view.hpp>
 #include <cudf/types.hpp>
@@ -75,6 +76,39 @@ class hash_join {
             cudf::null_equality compare_nulls,
             double load_factor,
             rmm::cuda_stream_view stream);
+
+  /// Tag selecting the no-insert constructor variant. The cuco multiset is
+  /// allocated and zero-initialized but the build-row insert kernel is
+  /// skipped. Callers must populate the table before any probe call (e.g.
+  /// via `apply_storage`).
+  struct no_insert_t {
+    explicit no_insert_t() = default;
+  };
+
+  /**
+   * @brief Constructor that allocates the hash table at the requested
+   *        capacity but skips the insert kernel.
+   *
+   * The build table view and preprocessed-build view are still recorded,
+   * so the resulting `hash_join` is structurally identical to one built
+   * normally; only the slot data is left in its cuco-initialized empty
+   * state. Callers are responsible for populating the slots before any
+   * probe call (typically via `apply_storage`).
+   *
+   * @param build The build table, from which preprocessed data is derived.
+   * @param has_nulls Flag to indicate if there exists any nulls in the
+   *        `build` table or any `probe` table that will be used later.
+   * @param compare_nulls Controls whether null join-key values should match.
+   * @param load_factor The hash table occupancy ratio in (0,1].
+   * @param stream CUDA stream used for device memory operations.
+   * @param tag Tag to select this constructor.
+   */
+  hash_join(cudf::table_view const& build,
+            bool has_nulls,
+            cudf::null_equality compare_nulls,
+            double load_factor,
+            rmm::cuda_stream_view stream,
+            no_insert_t tag);
 
   /**
    * @copydoc cudf::hash_join::inner_join
@@ -149,10 +183,26 @@ class hash_join {
     rmm::cuda_stream_view stream,
     rmm::device_async_resource_ref mr) const;
 
+  /**
+   * @copydoc cudf::hash_join::release_storage
+   */
+  [[nodiscard]] cudf::hash_join_storage release_storage(rmm::cuda_stream_view stream) const;
+
+  /**
+   * @brief Copies the slot bytes from `storage` into the internal cuco
+   *        multiset's storage on `stream`.
+   *
+   * `storage.slot_count` and `storage.slot_bytes` must match the
+   * multiset's current capacity and slot layout.
+   */
+  void apply_storage(cudf::hash_join_storage const& storage,
+                     rmm::cuda_stream_view stream);
+
  private:
   bool const _is_empty;   ///< true if `_hash_table` is empty
   bool const _has_nulls;  ///< true if nulls are present in either build table or any probe table
   cudf::null_equality const _nulls_equal;  ///< whether to consider nulls as equal
+  double const _load_factor;               ///< load factor used to size the underlying hash table
   cudf::table_view _build;                 ///< input table to build the hash map
   std::shared_ptr<cudf::detail::row::equality::preprocessed_table>
     _preprocessed_build;        ///< input table preprocssed for row operators
