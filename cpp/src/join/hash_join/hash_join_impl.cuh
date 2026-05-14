@@ -7,6 +7,7 @@
 #include <cudf/detail/join/hash_join.hpp>
 #include <cudf/types.hpp>
 
+#include <rmm/device_buffer.hpp>
 #include <rmm/mr/polymorphic_allocator.hpp>
 
 #include <cuco/static_multiset.cuh>
@@ -57,6 +58,14 @@ struct hash_join<Hasher>::impl {
                           cuco::storage<2>>;
 
   hash_table_t _hash_table;
+  /// When this hash_join was constructed via the adopt-storage path,
+  /// holds the `rmm::device_buffer` that `_hash_table` is viewing.
+  /// Empty otherwise. Members are destroyed in reverse declaration
+  /// order, so `_adopted_storage` is freed first; that's safe because
+  /// `_hash_table`'s cuco multiset uses a no-op deleter on its slot
+  /// pointer when adopting (it never dereferences the pointer during
+  /// destruction).
+  rmm::device_buffer _adopted_storage{};
 };
 
 }  // namespace cudf::detail

@@ -154,22 +154,30 @@ hash_join<Hasher>::hash_join(cudf::table_view const& build,
                              bool has_nulls,
                              cudf::null_equality compare_nulls,
                              double load_factor,
-                             rmm::cuda_stream_view stream,
-                             no_insert_t)
+                             cudf::hash_join_storage storage,
+                             rmm::cuda_stream_view stream)
   : _has_nulls(has_nulls),
     _is_empty{build.num_rows() == 0},
     _nulls_equal{compare_nulls},
     _load_factor{load_factor},
-    _impl{std::make_unique<impl>(impl{typename impl::hash_table_t{
-      cuco::extent{static_cast<size_t>(build.num_rows())},
-      load_factor,
-      cuco::empty_key{cuco::pair{std::numeric_limits<hash_value_type>::max(), cudf::JoinNoMatch}},
-      {},
-      {},
-      {},
-      {},
-      rmm::mr::polymorphic_allocator<char>{},
-      stream.value()}})},
+    _impl{[&]() {
+      using slot_type = cuco::pair<hash_value_type, cudf::size_type>;
+      auto* const slot_ptr = static_cast<slot_type*>(storage.slots.data());
+      auto hash_table = typename impl::hash_table_t{
+        cuco::extent{storage.slot_count},
+        slot_ptr,
+        cuco::adopt_storage,
+        cuco::empty_key{cuco::pair{std::numeric_limits<hash_value_type>::max(),
+                                   cudf::JoinNoMatch}},
+        {},
+        {},
+        {},
+        {},
+        rmm::mr::polymorphic_allocator<char>{},
+        stream.value()};
+      return std::make_unique<impl>(
+        impl{std::move(hash_table), std::move(storage.slots)});
+    }()},
     _build{build},
     _preprocessed_build{cudf::detail::row::equality::preprocessed_table::create(_build, stream)}
 {
@@ -178,8 +186,9 @@ hash_join<Hasher>::hash_join(cudf::table_view const& build,
   CUDF_EXPECTS(load_factor > 0 && load_factor <= 1,
                "Invalid load factor: must be greater than 0 and less than or equal to 1.",
                std::invalid_argument);
-  // Intentionally skip the build_hash_join insert kernel. Slots remain in
-  // cuco's empty-sentinel state until apply_storage runs.
+  // The cuco multiset adopted the spilled slot bytes — no insert kernel,
+  // no `cub::DeviceFor::Bulk` init kernel, no D-to-D copy. The hash_join
+  // is ready to probe.
 }
 
 template <typename Hasher>
@@ -204,25 +213,6 @@ cudf::hash_join_storage hash_join<Hasher>::release_storage(rmm::cuda_stream_view
   return out;
 }
 
-template <typename Hasher>
-void hash_join<Hasher>::apply_storage(cudf::hash_join_storage const& storage,
-                                      rmm::cuda_stream_view stream)
-{
-  CUDF_FUNC_RANGE();
-  auto& table        = _impl->_hash_table;
-  auto const slots   = table.capacity();
-  using slot_type    = std::remove_pointer_t<decltype(table.data())>;
-  auto const slot_sz = sizeof(slot_type);
-  CUDF_EXPECTS(storage.slot_count == slots,
-               "hash_join_storage slot_count does not match target hash table capacity",
-               std::invalid_argument);
-  CUDF_EXPECTS(storage.slot_bytes == slot_sz,
-               "hash_join_storage slot_bytes does not match target slot layout",
-               std::invalid_argument);
-  CUDF_CUDA_TRY(cudaMemcpyAsync(
-    table.data(), storage.slots.data(), slots * slot_sz, cudaMemcpyDeviceToDevice, stream.value()));
-}
-
 template hash_join<hash_join_hasher>::hash_join(cudf::table_view const& build,
                                                 bool has_nulls,
                                                 cudf::null_equality compare_nulls,
@@ -238,14 +228,11 @@ template hash_join<hash_join_hasher>::hash_join(cudf::table_view const& build,
                                                 bool has_nulls,
                                                 cudf::null_equality compare_nulls,
                                                 double load_factor,
-                                                rmm::cuda_stream_view stream,
-                                                hash_join<hash_join_hasher>::no_insert_t);
+                                                cudf::hash_join_storage storage,
+                                                rmm::cuda_stream_view stream);
 
 template cudf::hash_join_storage hash_join<hash_join_hasher>::release_storage(
   rmm::cuda_stream_view stream) const;
-
-template void hash_join<hash_join_hasher>::apply_storage(cudf::hash_join_storage const& storage,
-                                                        rmm::cuda_stream_view stream);
 
 template <typename Hasher>
 hash_join<Hasher>::~hash_join() = default;
@@ -290,14 +277,16 @@ std::unique_ptr<hash_join> hash_join::from_storage(hash_join_storage storage,
   auto const has_nulls     = storage.has_nulls;
   auto const compare_nulls = storage.compare_nulls;
   auto const load_factor   = storage.load_factor;
+  // Construct via the adopt-storage path — cuco takes the spilled
+  // buffer as its bucket storage directly. No init kernel, no D-to-D
+  // copy.
   auto detail_impl =
     std::make_unique<impl_type>(build,
                                 has_nulls,
                                 compare_nulls,
                                 load_factor,
-                                stream,
-                                typename impl_type::no_insert_t{});
-  detail_impl->apply_storage(storage, stream);
+                                std::move(storage),
+                                stream);
   // Use unique_ptr<hash_join>{new hash_join(...)} because hash_join is
   // non-movable: std::make_unique would still work, but we keep the
   // private constructor explicit at the call site.

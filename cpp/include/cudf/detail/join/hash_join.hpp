@@ -77,38 +77,35 @@ class hash_join {
             double load_factor,
             rmm::cuda_stream_view stream);
 
-  /// Tag selecting the no-insert constructor variant. The cuco multiset is
-  /// allocated and zero-initialized but the build-row insert kernel is
-  /// skipped. Callers must populate the table before any probe call (e.g.
-  /// via `apply_storage`).
-  struct no_insert_t {
-    explicit no_insert_t() = default;
-  };
-
   /**
-   * @brief Constructor that allocates the hash table at the requested
-   *        capacity but skips the insert kernel.
+   * @brief Adopt-storage constructor.
    *
-   * The build table view and preprocessed-build view are still recorded,
-   * so the resulting `hash_join` is structurally identical to one built
-   * normally; only the slot data is left in its cuco-initialized empty
-   * state. Callers are responsible for populating the slots before any
-   * probe call (typically via `apply_storage`).
+   * Constructs a `hash_join` whose internal cuco multiset uses
+   * `storage.slots` as its bucket storage directly — no allocation,
+   * no `cub::DeviceFor::Bulk` sentinel-init kernel, no D-to-D
+   * copy. The resulting `hash_join` takes ownership of the
+   * `rmm::device_buffer` inside `storage` and keeps it alive for its
+   * own lifetime.
    *
-   * @param build The build table, from which preprocessed data is derived.
-   * @param has_nulls Flag to indicate if there exists any nulls in the
-   *        `build` table or any `probe` table that will be used later.
-   * @param compare_nulls Controls whether null join-key values should match.
-   * @param load_factor The hash table occupancy ratio in (0,1].
-   * @param stream CUDA stream used for device memory operations.
-   * @param tag Tag to select this constructor.
+   * `storage` must come from a previous `release_storage()` call on a
+   * `hash_join` built with the same load_factor, compare_nulls, and
+   * has_nulls. Slot count / slot size must match the layout cuco
+   * would have used for `build.num_rows()` with the same load factor.
+   *
+   * @param build The build table. Must reference the same logical key
+   *        columns the original snapshot was built from.
+   * @param has_nulls Must match the snapshot.
+   * @param compare_nulls Must match the snapshot.
+   * @param load_factor Must match the snapshot.
+   * @param storage Spilled-snapshot storage; consumed.
+   * @param stream CUDA stream.
    */
   hash_join(cudf::table_view const& build,
             bool has_nulls,
             cudf::null_equality compare_nulls,
             double load_factor,
-            rmm::cuda_stream_view stream,
-            no_insert_t tag);
+            cudf::hash_join_storage storage,
+            rmm::cuda_stream_view stream);
 
   /**
    * @copydoc cudf::hash_join::inner_join
@@ -187,16 +184,6 @@ class hash_join {
    * @copydoc cudf::hash_join::release_storage
    */
   [[nodiscard]] cudf::hash_join_storage release_storage(rmm::cuda_stream_view stream) const;
-
-  /**
-   * @brief Copies the slot bytes from `storage` into the internal cuco
-   *        multiset's storage on `stream`.
-   *
-   * `storage.slot_count` and `storage.slot_bytes` must match the
-   * multiset's current capacity and slot layout.
-   */
-  void apply_storage(cudf::hash_join_storage const& storage,
-                     rmm::cuda_stream_view stream);
 
  private:
   bool const _is_empty;   ///< true if `_hash_table` is empty

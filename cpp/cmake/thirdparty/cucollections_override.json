@@ -1,0 +1,11 @@
+{
+  "packages": {
+    "cuco": {
+      "version": "0.0.1",
+      "git_shallow": false,
+      "always_download": true,
+      "git_url": "https://github.com/devavret/cuCollections.git",
+      "git_tag": "8e3a5ba726ec933edea1c01418a31311cd18a895"
+    }
+  }
+}
