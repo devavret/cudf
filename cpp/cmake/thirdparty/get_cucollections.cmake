@@ -7,9 +7,6 @@
 
 # This function finds cuCollections and performs any additional configuration.
 function(find_and_configure_cucollections)
-  include(${rapids-cmake-dir}/cpm/package_override.cmake)
-  rapids_cpm_package_override("${CMAKE_CURRENT_LIST_DIR}/cucollections_override.json")
-
   include(${rapids-cmake-dir}/cpm/cuco.cmake)
 
   rapids_cpm_cuco(BUILD_EXPORT_SET cudf-exports)

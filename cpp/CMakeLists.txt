@@ -258,7 +258,9 @@ if(CUDF_BUILD_TESTUTIL)
 endif()
 
 # add third party dependencies using CPM
-rapids_cpm_init()
+rapids_cpm_init(
+  OVERRIDE "${CMAKE_CURRENT_LIST_DIR}/cmake/thirdparty/cucollections_override.json"
+)
 
 include(${rapids-cmake-dir}/cpm/rapids_logger.cmake)
 rapids_cpm_rapids_logger(BUILD_EXPORT_SET cudf-exports INSTALL_EXPORT_SET cudf-exports)
